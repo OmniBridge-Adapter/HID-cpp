@@ -125,7 +125,7 @@ TEST(ReportDataAccess, UsageSetGetWithinCollection)
     EXPECT_EQ(buffer[0], 1U);
     EXPECT_EQ(buffer[1], 0x09U);
 
-    const auto k224 = report.get<TestCollection::Keyboard, TestKeys::K224>(std::span<const std::uint8_t>(buffer));
+    const auto k224 = report.get<TestCollection::Keyboard, TestKeys::K224>((buffer));
     const auto k225 = report.get<TestCollection::Keyboard, TestKeys::K225>(std::span<const std::uint8_t>(buffer));
     const auto k227 = report.get<TestCollection::Keyboard, TestKeys::K227>(std::span<const std::uint8_t>(buffer));
 

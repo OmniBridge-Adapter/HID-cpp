@@ -8,6 +8,7 @@
 const uint8_t item_sizes[4] = {0, 1, 2, 4};
 
 using namespace OB::HID::ReportDescriptor;
+using namespace OB::HID;
 
 Parser::Parser()
 {

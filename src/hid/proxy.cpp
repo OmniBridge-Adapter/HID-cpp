@@ -1,12 +1,11 @@
 #include "proxy.hpp"
-// #include "hid-rp/hid/report.hpp"
-// #include "hid-rp/hid/rdf/descriptor_view.hpp"
-// #include "hid-rp/hid/rdf/parser.hpp"
 
 #include "hid/report_descriptor/item.hpp"
+#include "hid/descriptor_view.hpp"
 
 #include <memory>
 #include <cassert>
+#include <iostream>
 
 using namespace OB::HID;
 
@@ -20,31 +19,33 @@ class ReportIDCollector
 
     std::set<report_selector_t> collect(std::span<const uint8_t> descriptor)
     {
+        using namespace OB::HID::ReportDescriptor;
         reportIDs_.clear();
+        DescriptorView view{descriptor};
         hid_report_id_t global_report_id = 0;
-        while (descriptor.size() > 1)
+        for (auto item : view)
         {
+            auto type = item.type();
+            auto size = item.data_size();
             uint8_t bTag  = (descriptor[0]>>4)&0x0F;
             uint8_t bType = (descriptor[0]>>2)&0x03;
             uint8_t bSize = (descriptor[0]>>0)&0x03;
-            if ((bType == 1) &&
-                (bTag  == 8) &&
-                (bSize == 1))
+            if ((item.type() == ItemType::Global) &&
+                (item.tagGlobal() == TagGlobal::ReportID) &&
+                (item.data_size() == 1))
             {
                 global_report_id = descriptor[1];
+                std::cout << "ReportID: " << int{global_report_id} << std::endl;
             }
-            else if ((bType = 0) &&
-                     ((bTag == 8 ) ||
-                      (bTag == 9 ) ||
-                      (bTag == 10)))
+            else if ((item.type() == ItemType::Main) &&
+                     ((item.tagMain() == TagMain::Input ) ||
+                      (item.tagMain() == TagMain::Output) ||
+                      (item.tagMain() == TagMain::Feature)))
             {
-                if (bTag == 8 ) reportIDs_.insert(std::tuple(global_report_id, hid_report_type_t::Input  ));
-                if (bTag == 9 ) reportIDs_.insert(std::tuple(global_report_id, hid_report_type_t::Output ));
-                if (bTag == 10) reportIDs_.insert(std::tuple(global_report_id, hid_report_type_t::Feature));
+                if (item.tagMain() == TagMain::Input  ) reportIDs_.insert(std::tuple(global_report_id, hid_report_type_t::Input  ));
+                if (item.tagMain() == TagMain::Output ) reportIDs_.insert(std::tuple(global_report_id, hid_report_type_t::Output ));
+                if (item.tagMain() == TagMain::Feature) reportIDs_.insert(std::tuple(global_report_id, hid_report_type_t::Feature));
             }
-            if (bSize == 3) bSize++;
-            bSize++;
-            descriptor = descriptor.subspan(bSize, descriptor.size()-bSize);
         }
         return reportIDs_;
     }
@@ -53,111 +54,6 @@ class ReportIDCollector
     std::set<report_selector_t> reportIDs_;
 };
 } // namespace
-
-template<typename T>
-struct DescriptorView
-{
-    DescriptorView(std::span<T> span) : m_span{span}{}
-
-    struct DescriptorViewIterator{
-
-        struct ItemRef{
-
-            constexpr ReportDescriptor::ItemType type() const
-            {
-                uint8_t bType = (m_span[0] >> 2 ) & 0x03;
-                return static_cast<ReportDescriptor::ItemType>(bType);
-            }
-
-            template<typename U> 
-            constexpr U tag() const
-            {
-                assert(ReportDescriptor::TagType<U>() == type());
-                uint8_t bTag = (m_span[0] >> 4) & 0x0F;
-                return static_cast<U>(bTag);
-            }
-
-            constexpr ReportDescriptor::TagMain   tagMain()   const
-            { 
-                assert(type() == ReportDescriptor::ItemType::Main);   
-                return tag<ReportDescriptor::TagMain>(); 
-            }
-            constexpr ReportDescriptor::TagLocal  tagLocal()  const
-            { 
-                assert(type() == ReportDescriptor::ItemType::Local);  
-                return tag<ReportDescriptor::TagLocal>(); 
-            }
-            constexpr ReportDescriptor::TagGlobal tagGlobal() const
-            { 
-                assert(type() == ReportDescriptor::ItemType::Global); 
-                return tag<ReportDescriptor::TagGlobal>(); 
-            }
-
-
-            constexpr std::size_t data_size() const
-            {
-                uint8_t bSize = m_span[0];
-                if (bSize == 3) bSize++;
-                return bSize;
-            }
-
-            constexpr std::span<T> data() 
-            {
-                return m_span;
-            }
-
-            constexpr std::span<const T> data() const
-            {
-                return m_span;
-            }
-
-            constexpr std::size_t size() const
-            {
-                return data_size() + 1;
-            }
-
-            std::span<T> m_span;
-        };
-
-        DescriptorViewIterator(std::span<T> span): m_span{span}{}
-
-        ItemRef operator*()
-        {
-            ItemRef i{m_span};
-            auto size = i.size();
-            return ItemRef{m_span.subspan(0, size)};
-        }
-
-        DescriptorViewIterator operator++()
-        {
-            DescriptorViewIterator self = *this;
-            ItemRef item = self.operator*();
-            uint8_t itemSize = item.size();
-            m_span = m_span.subspan(itemSize, m_span.size_bytes() - itemSize);
-            return self;
-        }
-
-        bool operator==(const DescriptorViewIterator &other) const
-        {
-            if (other.m_span.data() == nullptr && m_span.size_bytes() == 0) return true; // at end
-            return (other.m_span.data() == m_span.data()) && (other.m_span.size_bytes() == m_span.size_bytes());
-        }
-
-        std::span<T> m_span;
-    };
-
-    DescriptorViewIterator begin()
-    {
-        return {m_span};
-    }
-
-    DescriptorViewIterator end()
-    {
-        return std::span<T>{static_cast<T*>(nullptr), 0};
-    }
-
-    std::span<T> m_span;
-};
 
 void Proxy::addApplication(Application *application)
 {
@@ -173,6 +69,7 @@ void Proxy::addApplication(Application *application)
 
     for (const auto& k : reportIDs)
     {
+        std::cout << "report id " << int{std::get<0>(k)} << std::endl;
         auto [reportID, reportType] = k;
         
         hid_report_id_t remappedID = 0;
@@ -191,6 +88,7 @@ void Proxy::addApplication(Application *application)
         m_reportMapping.emplace(std::make_tuple(remappedID, reportType), remapped);
         report_mapping_t mapping{reportID, reportType, remappedID};
         mappings.push_back(mapping);
+        std::cout << "added mapping" << std::endl;
 
         if (reportType == hid_report_type_t::Input)
         {
@@ -218,18 +116,17 @@ void Proxy::addApplication(Application *application)
             (void)_type;
             oldToNew.emplace(oldId, newId);
         }
-
         DescriptorView view{fragment};
         for (const auto item : view)
         {
-            const auto* itemData = reinterpret_cast<const uint8_t*>(std::addressof(item));
+            const auto itemData = item.data();
             const size_t itemLen = item.size();
 
             if (item.type() == OB::HID::ReportDescriptor::ItemType::Global &&
                 item.tagGlobal() == OB::HID::ReportDescriptor::TagGlobal::ReportID &&
                 item.data_size() == 1)
             {
-                hid_report_id_t oldId = item.data()[0];
+                hid_report_id_t oldId = itemData[1];
                 auto remap = oldToNew.find(oldId);
                 if (remap != oldToNew.end())
                 {
@@ -238,12 +135,12 @@ void Proxy::addApplication(Application *application)
                 }
                 else
                 {
-                    m_reportDescriptor.insert(m_reportDescriptor.end(), itemData, itemData + itemLen);
+                    m_reportDescriptor.insert(m_reportDescriptor.end(), itemData.begin(), itemData.end());
                 }
             }
             else
             {
-                m_reportDescriptor.insert(m_reportDescriptor.end(), itemData, itemData + itemLen);
+                m_reportDescriptor.insert(m_reportDescriptor.end(), itemData.begin(), itemData.end());
             }
         }
     }
@@ -295,6 +192,12 @@ void Proxy::hid_report_complete_callback(hid_report_id_t report_id)
 
 Proxy::report_id_mapping_t Proxy::hid_report_id_mapping(hid_report_id_t report_id, hid_report_type_t report_type) const
 {
+    std::cout << "mappings: " << std::endl;
+    for (auto &mapping : m_reportMapping)
+    {
+        std::cout << "(" << int{std::get<0>(std::get<0>(mapping))} << "," <<  int{static_cast<uint8_t>(std::get<1>(std::get<0>(mapping)))} << "), " << int{std::get<1>(std::get<1>(mapping))} << std::endl;
+    }
+    std::cout << std::endl;
     auto it = m_reportMapping.find(std::make_tuple(report_id, report_type));
     if (it == m_reportMapping.end())
     {

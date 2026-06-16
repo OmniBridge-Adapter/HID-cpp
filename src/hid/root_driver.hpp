@@ -9,9 +9,9 @@ namespace OB::HID
     {
     public:
         RootDriver() : m_application{nullptr}{}
-        Application *getCollection() { return m_application; }
-        const Application *getCollection() const { return m_application; }
-        void setCollection(Application *collection) { m_application = collection; }
+        Application *getApplication() { return m_application; }
+        const Application *getApplication() const { return m_application; }
+        void setApplication(Application *collection) { m_application = collection; }
     protected:
     private:
         Application *m_application;
