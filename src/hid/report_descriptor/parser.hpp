@@ -23,6 +23,11 @@ namespace OB::HID::ReportDescriptor
         {
             return m_values[index(tag)];
         }
+        
+        constexpr uint16_t usage_page() const
+        {
+            return static_cast<uint16_t>(m_values[index(TagGlobal::UsagePage)]);
+        }
 
         constexpr void set(TagGlobal tag, int value)
         {

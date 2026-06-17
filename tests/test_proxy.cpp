@@ -127,6 +127,7 @@ namespace
         OB::HID::ReportDescriptor::DataFlags<
             OB::HID::ReportDescriptor::DataOrConstant::Data
         >,
+        OB::HID::ReportDescriptor::UsagePage<Page::Keyboard>,
         OB::HID::ReportDescriptor::Usage<Page::Keyboard::Keyboard_aA>,
         OB::HID::ReportDescriptor::ReportCount<OB::HID::ReportDescriptor::Helpers::Constant<1>>,
         OB::HID::ReportDescriptor::ReportSize<OB::HID::ReportDescriptor::Helpers::Constant<1>>
@@ -145,6 +146,7 @@ namespace
         OB::HID::ReportDescriptor::ReportID<OB::HID::ReportDescriptor::Helpers::Constant<1>>,
         OB::HID::ReportDescriptor::Collection<
             OB::HID::ReportDescriptor::CollectionType::Application,
+            OB::HID::ReportDescriptor::UsagePage<Page::GenericDesktop>,
             OB::HID::ReportDescriptor::Usage<Page::GenericDesktop::Keyboard>,
             DummyInput
         >
@@ -153,6 +155,7 @@ namespace
         OB::HID::ReportDescriptor::ReportID<OB::HID::ReportDescriptor::Helpers::Constant<1>>,
         OB::HID::ReportDescriptor::Collection<
             OB::HID::ReportDescriptor::CollectionType::Application,
+            OB::HID::ReportDescriptor::UsagePage<Page::GenericDesktop>,
             OB::HID::ReportDescriptor::Usage<Page::GenericDesktop::Keyboard>,
             DummyInput,
             DummyOutput

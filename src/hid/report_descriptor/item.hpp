@@ -101,16 +101,21 @@ namespace OB::HID::ReportDescriptor
 
         template <class TTag, class TData> requires(SIZE > 0)
         constexpr ShortItem(TTag tag, TData val)
-        : ShortItem(tag)
         {
             auto value = static_cast<std::uint32_t>(val);
-            for (std::size_t i = 0; i < SIZE; ++i)
+            auto size = std::min(SIZE, ValueSize(value));
+
+            std::uint8_t tag_byte = (static_cast<std::uint8_t>(tag)<<4) |
+                                (static_cast<std::uint8_t>(TagType<TTag>()) << 2) |
+                                static_cast<std::uint8_t>((size == 4U) ? 3U : size);
+            m_descriptorArray.push_back(tag_byte);
+            for (std::size_t i = 0; i < size; ++i)
             {
                 m_descriptorArray.push_back(static_cast<std::uint8_t>(value));
                 value >>= 8;
             }
         }
-        constexpr CappedArray<std::uint8_t, SIZE+1> descriptor_fragment(DescriptorGlobalState&) const
+        constexpr CappedArray<std::uint8_t, SIZE+1> descriptor(DescriptorGlobalState&&) const
         {
             return m_descriptorArray;
         }
@@ -153,7 +158,7 @@ namespace OB::HID::ReportDescriptor
                 value >>= 8;
             }
         }
-        constexpr CappedArray<std::uint8_t, 4+1> descriptor_fragment(DescriptorGlobalState&) const
+        constexpr CappedArray<std::uint8_t, 4+1> descriptor(DescriptorGlobalState&&) const
         {
             return m_descriptorArray;
         }
@@ -213,8 +218,41 @@ namespace OB::HID::ReportDescriptor
     private:
     };
 
+    template<typename Page, Page Usage>
+    class LocalItem<TagLocal::Usage, Usage> : public ShortItem<4>
+    {
+        using base = ShortItem<4>;
+    public:
+        constexpr LocalItem()
+        : base{TagLocal::Usage, Usage}
+        {}
 
-    template<TagGlobal GlobalType, int Value>
+        using ctor_param_types = std::tuple<>;
+
+        constexpr int descriptorValue() const
+        {
+            return static_cast<int>(Usage);
+        }
+
+        constexpr CappedArray<std::uint8_t, 4 + 1> descriptor(DescriptorGlobalState &&globalState) const
+        {
+            CappedArray<std::uint8_t, 4 + 1> out;
+            if (globalState.has(TagGlobal::UsagePage) && globalState.usage_page() == get_info<Page>().usagePage)
+            {
+                return base::descriptor(std::forward<DescriptorGlobalState>(globalState));
+                // return ShortItem<4>{TagLocal::Usage, static_cast<uint16_t>(Usage)}.descriptor(std::forward<DescriptorGlobalState>(globalState));
+            }
+            uint32_t usageID = get_usage_id(Usage);
+            return ShortItem<4>{TagLocal::Usage, usageID}.descriptor(std::forward<DescriptorGlobalState>(globalState));
+        }
+        static constexpr std::size_t descriptor_max_len = 5;
+    protected:
+    private:
+        static constexpr Page s_usage = Usage;
+    };
+
+
+    template<TagGlobal GlobalType, auto Value>
     class GlobalItem : public ShortItem<ValueSize<Value>()>
     {
     public:
@@ -225,12 +263,12 @@ namespace OB::HID::ReportDescriptor
         using ctor_param_types = std::tuple<>;
         using ctor_types = ctor_param_types;
 
-        constexpr int descriptorValue() const
+        constexpr decltype(Value) descriptorValue() const
         {
             return Value;
         }
 
-        constexpr CappedArray<std::uint8_t, ValueSize<Value>() + 1> descriptor_fragment(DescriptorGlobalState& globalState) const
+        constexpr CappedArray<std::uint8_t, ValueSize<Value>() + 1> descriptor(DescriptorGlobalState &&globalState) const
         {
             CappedArray<std::uint8_t, ValueSize<Value>() + 1> out;
             if (globalState.has(GlobalType) && globalState.value(GlobalType) == Value)
@@ -264,7 +302,7 @@ namespace OB::HID::ReportDescriptor
             return m_value;
         }
 
-        constexpr CappedArray<std::uint8_t, descriptor_max_len> descriptor_fragment(DescriptorGlobalState& globalState) const
+        constexpr CappedArray<std::uint8_t, descriptor_max_len> descriptor(DescriptorGlobalState &&globalState) const
         {
             CappedArray<std::uint8_t, descriptor_max_len> out;
             if (globalState.has(GlobalType) && globalState.value(GlobalType) == m_value)
@@ -330,7 +368,7 @@ namespace OB::HID::ReportDescriptor
             return m_reportID;
         }
 
-        constexpr CappedArray<std::uint8_t, 2> descriptor_fragment(DescriptorGlobalState& globalState) const
+        constexpr CappedArray<std::uint8_t, 2> descriptor(DescriptorGlobalState &&globalState) const
         {
             CappedArray<std::uint8_t, 2> out;
             if (globalState.has(OB::HID::ReportDescriptor::TagGlobal::ReportID) && globalState.value(OB::HID::ReportDescriptor::TagGlobal::ReportID) == getReportID())
@@ -360,59 +398,6 @@ namespace OB::HID::ReportDescriptor
     private:
         const uint8_t m_reportID;
     };
-
-    // template<>
-    // class ReportID<-1> : public ShortItem<1>
-    // {
-    // public:
-    //     constexpr ReportID(report_id_t reportID)
-    //     : ShortItem<1>{OB::HID::ReportDescriptor::TagGlobal::ReportID, reportID.value}
-    //     , m_reportID{reportID.value}
-    //     {}
-
-    //     using ctor_param_types = std::tuple<report_id_t>;
-    //     static constexpr std::size_t dataSizeBits = 8;
-
-    //     constexpr std::size_t sizeBits() const 
-    //     { 
-    //         return dataSizeBits;
-    //     }
-
-    //     constexpr int descriptorValue() const
-    //     {
-    //         return m_reportID;
-    //     }
-
-    //     constexpr CappedArray<std::uint8_t, 2> descriptor_fragment(DescriptorGlobalState& globalState) const
-    //     {
-    //         CappedArray<std::uint8_t, 2> out;
-    //         if (globalState.has(TagGlobal::ReportID) && globalState.value(TagGlobal::ReportID) == m_reportID)
-    //         {
-    //             return out;
-    //         }
-
-    //         globalState.set(TagGlobal::ReportID, m_reportID);
-    //         out.insert(out.end(), this->m_descriptorArray.cbegin(), this->m_descriptorArray.cend());
-    //         return out;
-    //     }
-
-    //     constexpr report_id_t get(std::span<const uint8_t> reportData, std::size_t bitpos) const
-    //     {
-    //         assert(bitpos == 0); // ReportID must always be the first thing in the report.
-    //         assert(reportData.size() > 0);
-    //         return report_id_t{reportData[0]};
-    //     }
-
-    //     constexpr void set(std::span<uint8_t> reportBuffer, std::size_t bitpos) const
-    //     {
-    //         assert(bitpos == 0);
-    //         assert(reportBuffer.size() > 0);
-    //         reportBuffer[0] = m_reportID;
-    //     }
-    // protected:
-    // private:
-    //     uint8_t m_reportID;
-    // };
 
 
     template<class Page>
@@ -455,8 +440,8 @@ namespace OB::HID::ReportDescriptor
     GLOBAL_ITEM(Unit, unit_t);
 
 
-    template<auto Value>
-    using Usage = LocalItem<TagLocal::Usage, static_cast<std::uint32_t>(Value)>;
+    template<auto Usage_>
+    using Usage = LocalItem<TagLocal::Usage, Usage_>;
 
     template<auto Value>
     using UsageMinimum = LocalItem<TagLocal::UsageMinimum, static_cast<std::uint32_t>(Value)>;
@@ -645,27 +630,27 @@ namespace OB::HID::ReportDescriptor
 
         template<std::size_t ...Is>
         constexpr CappedArray<std::uint8_t, descriptor_max_len> descriptor_impl(
-            DescriptorGlobalState& globalState,
+            DescriptorGlobalState &&globalState,
             std::index_sequence<Is...>) const
         {
             CappedArray<std::uint8_t, descriptor_max_len> out;
             auto append_one = [&](const auto& child) {
-                auto fragment = child.descriptor_fragment(globalState);
+                auto fragment = child.descriptor(std::forward<DescriptorGlobalState>(globalState));
                 out.insert(out.end(), fragment.cbegin(), fragment.cend());
             };
             (append_one(std::get<Is>(m_items)), ...);
             return out;
         }
 
-        constexpr CappedArray<std::uint8_t, descriptor_max_len> descriptor_fragment(DescriptorGlobalState& globalState) const
+        constexpr CappedArray<std::uint8_t, descriptor_max_len> descriptor(DescriptorGlobalState&& globalState) const
         {
-            return descriptor_impl(globalState, std::make_index_sequence<sizeof...(Items)>{});
+            return descriptor_impl(std::forward<DescriptorGlobalState>(globalState), std::make_index_sequence<sizeof...(Items)>{});
         }
 
         constexpr CappedArray<std::uint8_t, descriptor_max_len> asArray() const
         {
             DescriptorGlobalState state;
-            return descriptor_fragment(state);
+            return descriptor(state);
         }
     protected:
     private:
@@ -753,12 +738,12 @@ namespace OB::HID::ReportDescriptor
             return m_repeatCount;
         }
 
-        constexpr CappedArray<std::uint8_t, descriptor_max_len> descriptor_fragment(DescriptorGlobalState& globalState) const
+        constexpr CappedArray<std::uint8_t, descriptor_max_len> descriptor(DescriptorGlobalState &&globalState) const
         {
             CappedArray<std::uint8_t, descriptor_max_len> out;
             // Build one canonical repeated fragment so all repeated structures are identical.
             DescriptorGlobalState repeatState = globalState;
-            auto repeatedFragment = group_type::descriptor_fragment(repeatState);
+            auto repeatedFragment = group_type::descriptor(std::forward<DescriptorGlobalState>(repeatState));
             for (std::size_t i = 0; i < m_repeatCount; ++i)
             {
                 out.insert(out.end(), repeatedFragment.cbegin(), repeatedFragment.cend());

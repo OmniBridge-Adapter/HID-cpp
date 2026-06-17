@@ -62,6 +62,7 @@ namespace OB::HID
     template <class ...Items>
     class Report
     {
+    public:
         static_assert((requires { Items::descriptor_max_len; } && ...), "All Report items must define descriptor_max_len");
 
         struct UsageToken
@@ -71,8 +72,10 @@ namespace OB::HID
         };
 
         using ctor_types = params_list<Items...>::types;
+        using ctor_param_types = ctor_types;
         using ctor_indices = params_list<Items...>::indices;
         static constexpr std::size_t MAX_SIZE = (Items::descriptor_max_len + ...);
+        static constexpr std::size_t descriptor_max_len = MAX_SIZE;
 
 
         template<typename TupleArgs, typename ...Indices>
@@ -86,12 +89,14 @@ namespace OB::HID
         }
 
         template<std::size_t ...Is>
-        constexpr CappedArray<uint8_t, MAX_SIZE> descriptor_impl(std::index_sequence<Is...>) const
+        constexpr CappedArray<uint8_t, MAX_SIZE> descriptor_impl(
+            DescriptorGlobalState &&globalState,
+            std::index_sequence<Is...>
+        ) const
         {
             CappedArray<uint8_t, MAX_SIZE> out;
-            DescriptorGlobalState globalState;
             auto append_one = [&](const auto& item) {
-                auto fragment = item.descriptor_fragment(globalState);
+                auto fragment = item.descriptor(std::forward<DescriptorGlobalState>(globalState));
                 out.insert(out.end(), fragment.cbegin(), fragment.cend());
             };
             (append_one(std::get<Is>(m_reportItems)), ...);
@@ -401,10 +406,18 @@ namespace OB::HID
         ))
         {}
 
+        constexpr CappedArray<uint8_t, MAX_SIZE> descriptor(
+            DescriptorGlobalState &&globalState
+        ) const
+        {
+            return descriptor_impl(std::forward<DescriptorGlobalState>(globalState), std::make_index_sequence<sizeof...(Items)>{});
+        }
+        
         constexpr CappedArray<uint8_t, MAX_SIZE> descriptor() const
         {
-            return descriptor_impl(std::make_index_sequence<sizeof...(Items)>{});
+            return descriptor_impl(DescriptorGlobalState{}, std::make_index_sequence<sizeof...(Items)>{});
         }
+        
         constexpr std::size_t descriptorSize() const 
         { 
             return descriptor().size(); 
