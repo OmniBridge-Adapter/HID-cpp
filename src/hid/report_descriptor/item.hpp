@@ -836,12 +836,12 @@ namespace OB::HID::ReportDescriptor
         constexpr static bool is_global = false;
     };
 
-    template<TagGlobal GlobalType, int Value>
+    template<TagGlobal GlobalType, auto Value>
     struct global_item_info<GlobalItem<GlobalType, Value>>
     {
         constexpr static bool is_global = true;
         constexpr static TagGlobal tag = GlobalType;
-        constexpr static int static_value = Value;
+        constexpr static auto static_value = Value;
     };
 
     template<class reportID>

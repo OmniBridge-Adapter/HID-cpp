@@ -121,13 +121,18 @@ namespace OB::HID
 
             std::array<UsageToken, 16> collectionStack{};
             std::size_t collectionDepth = 0;
+
+            std::array<std::size_t, 16> pathCoordinates{};
+            std::size_t pathCoordinateLen = 0;
         };
 
         struct UsageFieldSearch
         {
             std::array<UsageToken, 16> path{};
             std::size_t pathLen = 0;
+            std::span<const std::size_t> indices{};
             std::size_t remainingPathInstance = 0;
+            bool usePathInstance = false;
             bool found = false;
             std::size_t bitOffset = 0;
             std::size_t bitCount = 0;
@@ -188,6 +193,31 @@ namespace OB::HID
             return leaf.usagePage == leafUsagePage && leaf.usage == leafUsage;
         }
 
+        constexpr bool matches_index_path(
+            const LayoutWalkState& state,
+            const UsageFieldSearch& search) const
+        {
+            if (search.indices.empty())
+            {
+                return true;
+            }
+
+            if (search.indices.size() > state.pathCoordinateLen)
+            {
+                return false;
+            }
+
+            for (std::size_t i = 0; i < search.indices.size(); ++i)
+            {
+                if (state.pathCoordinates[i] != search.indices[i])
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
         constexpr void consider_usage_field(
             LayoutWalkState& state,
             UsageFieldSearch* search,
@@ -208,9 +238,16 @@ namespace OB::HID
                 return;
             }
 
-            if (search->remainingPathInstance > 0)
+            if (search->usePathInstance)
             {
-                search->remainingPathInstance--;
+                if (search->remainingPathInstance > 0)
+                {
+                    search->remainingPathInstance--;
+                    return;
+                }
+            }
+            else if (!matches_index_path(state, *search))
+            {
                 return;
             }
 
@@ -241,11 +278,14 @@ namespace OB::HID
                 return;
             }
 
-            if (tag != TagMain::Input && tag != TagMain::Output)
+            if (tag != TagMain::Input && tag != TagMain::Output && tag != TagMain::Feature)
             {
                 reset_local_state(state);
                 return;
             }
+
+            const bool usageIsRange = state.localUsageMinValid && state.localUsageMaxValid;
+            const bool needsFieldIndex = state.localUsageValid && !usageIsRange && state.reportCount > 1;
 
             for (std::size_t i = 0; i < state.reportCount; ++i)
             {
@@ -257,12 +297,21 @@ namespace OB::HID
                 }
                 else if (state.localUsageValid)
                 {
-                    usage = state.localUsage + static_cast<int>(i);
+                    usage = state.localUsage;
                 }
 
                 if (usage >= 0)
                 {
+                    if (needsFieldIndex)
+                    {
+                        assert(state.pathCoordinateLen < state.pathCoordinates.size());
+                        state.pathCoordinates[state.pathCoordinateLen++] = i;
+                    }
                     consider_usage_field(state, search, usage, fieldBitOffset, state.reportSizeBits);
+                    if (needsFieldIndex)
+                    {
+                        state.pathCoordinateLen--;
+                    }
                 }
             }
 
@@ -280,7 +329,10 @@ namespace OB::HID
                 {
                     for (std::size_t i = 0; i < item.repeat_count(); ++i)
                     {
+                        assert(state.pathCoordinateLen < state.pathCoordinates.size());
+                        state.pathCoordinates[state.pathCoordinateLen++] = i;
                         walk_layout_tuple(item.items(), state, search, std::make_index_sequence<itemCount>{});
+                        state.pathCoordinateLen--;
                     }
                 }
                 else
@@ -362,6 +414,25 @@ namespace OB::HID
 
         constexpr UsageFieldSearch find_usage_field_by_path(
             std::span<const UsageToken> path,
+            std::span<const std::size_t> indices) const
+        {
+            UsageFieldSearch search{};
+            assert(path.size() > 0);
+            assert(path.size() <= search.path.size());
+            search.pathLen = path.size();
+            search.indices = indices;
+            for (std::size_t i = 0; i < path.size(); ++i)
+            {
+                search.path[i] = path[i];
+            }
+
+            LayoutWalkState state{};
+            walk_layout_tuple(m_reportItems, state, &search, std::make_index_sequence<sizeof...(Items)>{});
+            return search;
+        }
+
+        constexpr UsageFieldSearch find_usage_field_by_path(
+            std::span<const UsageToken> path,
             std::size_t pathInstance) const
         {
             UsageFieldSearch search{};
@@ -369,6 +440,7 @@ namespace OB::HID
             assert(path.size() <= search.path.size());
             search.pathLen = path.size();
             search.remainingPathInstance = pathInstance;
+            search.usePathInstance = true;
             for (std::size_t i = 0; i < path.size(); ++i)
             {
                 search.path[i] = path[i];
@@ -429,11 +501,11 @@ namespace OB::HID
         }
 
         template<auto ...UsagePath>
-        constexpr uint32_t get(std::span<const uint8_t> reportData, std::size_t pathInstance = 0) const
+        constexpr uint32_t get(std::span<const uint8_t> reportData, std::span<const std::size_t> indices) const
         {
             static_assert(sizeof...(UsagePath) > 0, "get requires at least one usage in the path");
             constexpr auto path = make_path_tokens<UsagePath...>();
-            const auto field = find_usage_field_by_path(std::span{path}, pathInstance);
+            const auto field = find_usage_field_by_path(std::span{path}, indices);
             assert(field.found);
             assert(field.bitCount <= 32);
 
@@ -441,16 +513,53 @@ namespace OB::HID
             return bits.template get<uint32_t>(field.bitOffset, field.bitCount);
         }
 
+        template<auto ...UsagePath>
+        constexpr uint32_t get(std::span<const uint8_t> reportData, std::size_t index) const
+        {
+            static_assert(sizeof...(UsagePath) > 0, "get requires at least one usage in the path");
+            constexpr auto path = make_path_tokens<UsagePath...>();
+            const auto field = find_usage_field_by_path(std::span{path}, index);
+            assert(field.found);
+            assert(field.bitCount <= 32);
+
+            bitspan<const uint8_t> bits{reportData};
+            return bits.template get<uint32_t>(field.bitOffset, field.bitCount);
+        }
+
+        template<auto ...UsagePath>
+        constexpr uint32_t get(std::span<const uint8_t> reportData) const
+        {
+            return get<UsagePath...>(reportData, std::span<const std::size_t>{});
+        }
+
         template<auto ...UsagePath, typename T>
-        constexpr void set(std::span<uint8_t> reportData, T value, std::size_t pathInstance = 0) const
+        constexpr void set(std::span<uint8_t> reportData, T value, std::span<const std::size_t> indices) const
         {
             static_assert(sizeof...(UsagePath) > 0, "set requires at least one usage in the path");
             constexpr auto path = make_path_tokens<UsagePath...>();
-            const auto field = find_usage_field_by_path(std::span{path}, pathInstance);
+            const auto field = find_usage_field_by_path(std::span{path}, indices);
             assert(field.found);
 
             bitspan<uint8_t> bits{reportData};
             bits.template set<T>(value, field.bitOffset, field.bitCount);
+        }
+
+        template<auto ...UsagePath, typename T>
+        constexpr void set(std::span<uint8_t> reportData, T value, std::size_t index) const
+        {
+            static_assert(sizeof...(UsagePath) > 0, "set requires at least one usage in the path");
+            constexpr auto path = make_path_tokens<UsagePath...>();
+            const auto field = find_usage_field_by_path(std::span{path}, index);
+            assert(field.found);
+
+            bitspan<uint8_t> bits{reportData};
+            bits.template set<T>(value, field.bitOffset, field.bitCount);
+        }
+
+        template<auto ...UsagePath, typename T>
+        constexpr void set(std::span<uint8_t> reportData, T value) const
+        {
+            set<UsagePath...>(reportData, value, std::span<const std::size_t>{});
         }
 
     protected:

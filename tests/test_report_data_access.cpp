@@ -217,6 +217,37 @@ TEST(ReportDataAccess, DynamicRepeatCollectionSelectsPathInstance)
     EXPECT_EQ(report.reportSize(), 3U);
 }
 
+TEST(ReportDataAccess, DynamicRepeatCollectionRespectsRuntimeCount)
+{
+    using MyReport = OB::HID::Report<
+        ReportID<Helpers::Constant<1>>,
+        UsagePage<TestNestedCollection>,
+        Repeat<
+            1,
+            4,
+            Collection<
+                CollectionType::Logical,
+                Usage<TestNestedCollection::Outer>,
+                Input<
+                    DataFlags<
+                        DataOrConstant::Data,
+                        ArrayOrVariable::Variable
+                    >,
+                    UsagePage<TestNestedField>,
+                    Usage<TestNestedField::Value>,
+                    ReportCount<Helpers::Constant<1>>,
+                    ReportSize<Helpers::Constant<8>>,
+                    LogicalMinimum<Helpers::Constant<0>>,
+                    LogicalMaximum<Helpers::Constant<255>>
+                >
+            >
+        >
+    >;
+
+    MyReport report{repeat_count_t{2}};
+    EXPECT_EQ(report.reportSize(), 3U);
+}
+
 TEST(ReportDataAccess, ReportSizeIncludesReportIDAndDataBits)
 {
     using MyReport = OB::HID::Report<
@@ -239,4 +270,47 @@ TEST(ReportDataAccess, ReportSizeIncludesReportIDAndDataBits)
     MyReport report{};
 
     EXPECT_EQ(report.reportSize(), 2U);
+}
+
+TEST(ReportDataAccess, RuntimeIndicesSelectCollectionAndArrayElement)
+{
+    using MyReport = OB::HID::Report<
+        ReportID<Helpers::Constant<1>>,
+        UsagePage<TestNestedCollection>,
+        Repeat<
+            1,
+            4,
+            Collection<
+                CollectionType::Logical,
+                Usage<TestNestedCollection::Outer>,
+                Input<
+                    DataFlags<
+                        DataOrConstant::Data,
+                        ArrayOrVariable::Variable
+                    >,
+                    UsagePage<TestNestedField>,
+                    Usage<TestNestedField::Value>,
+                    ReportCount<Helpers::Constant<2>>,
+                    ReportSize<Helpers::Constant<8>>,
+                    LogicalMinimum<Helpers::Constant<0>>,
+                    LogicalMaximum<Helpers::Constant<255>>
+                >
+            >
+        >
+    >;
+
+    MyReport report{repeat_count_t{2}};
+    std::array<std::uint8_t, 5> buffer{1, 0, 0, 0, 0};
+
+    const std::array<std::size_t, 2> firstInSecondCollection{1, 0};
+    const std::array<std::size_t, 2> secondInSecondCollection{1, 1};
+
+    report.set<TestNestedCollection::Outer, TestNestedField::Value>(std::span<std::uint8_t>(buffer), 0x33U, std::span<const std::size_t>(firstInSecondCollection));
+    report.set<TestNestedCollection::Outer, TestNestedField::Value>(std::span<std::uint8_t>(buffer), 0x77U, std::span<const std::size_t>(secondInSecondCollection));
+
+    const auto first = report.get<TestNestedCollection::Outer, TestNestedField::Value>(std::span<const std::uint8_t>(buffer), std::span<const std::size_t>(firstInSecondCollection));
+    const auto second = report.get<TestNestedCollection::Outer, TestNestedField::Value>(std::span<const std::uint8_t>(buffer), std::span<const std::size_t>(secondInSecondCollection));
+
+    EXPECT_EQ(first, 0x33U);
+    EXPECT_EQ(second, 0x77U);
 }
