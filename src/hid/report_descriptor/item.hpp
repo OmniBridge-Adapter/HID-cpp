@@ -869,6 +869,7 @@ namespace OB::HID::ReportDescriptor
     {
         constexpr static bool is_local = true;
         constexpr static TagLocal tag = LocalType;
+        constexpr static auto static_value = Value;
     };
 
     template<class T>

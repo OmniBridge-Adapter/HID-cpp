@@ -134,6 +134,8 @@ namespace OB::HID
             std::size_t remainingPathInstance = 0;
             bool usePathInstance = false;
             bool found = false;
+            std::size_t fuzzyMatchCount = 0;
+            bool fuzzyAmbiguous = false;
             std::size_t bitOffset = 0;
             std::size_t bitCount = 0;
         };
@@ -193,6 +195,36 @@ namespace OB::HID
             return leaf.usagePage == leafUsagePage && leaf.usage == leafUsage;
         }
 
+        constexpr bool matches_usage_path_fuzzy(
+            const LayoutWalkState& state,
+            const UsageFieldSearch& search,
+            int leafUsagePage,
+            int leafUsage) const
+        {
+            if (search.pathLen == 0)
+            {
+                return false;
+            }
+
+            const auto& leaf = search.path[search.pathLen - 1];
+            if (leaf.usagePage != leafUsagePage || leaf.usage != leafUsage)
+            {
+                return false;
+            }
+
+            std::size_t queryIndex = 0;
+            const std::size_t queryCollectionLen = search.pathLen - 1;
+            for (std::size_t i = 0; i < state.collectionDepth && queryIndex < queryCollectionLen; ++i)
+            {
+                if (state.collectionStack[i].usage == search.path[queryIndex].usage)
+                {
+                    ++queryIndex;
+                }
+            }
+
+            return queryIndex == queryCollectionLen;
+        }
+
         constexpr bool matches_index_path(
             const LayoutWalkState& state,
             const UsageFieldSearch& search) const
@@ -229,13 +261,19 @@ namespace OB::HID
             {
                 return;
             }
-            if (search->found)
+            if (search->found && search->usePathInstance)
             {
                 return;
             }
+
+            bool matchedWithFuzzy = false;
             if (!matches_usage_path(state, *search, state.usagePage, usage))
             {
-                return;
+                if (!matches_usage_path_fuzzy(state, *search, state.usagePage, usage))
+                {
+                    return;
+                }
+                matchedWithFuzzy = true;
             }
 
             if (search->usePathInstance)
@@ -249,6 +287,16 @@ namespace OB::HID
             else if (!matches_index_path(state, *search))
             {
                 return;
+            }
+
+            if (matchedWithFuzzy && !search->usePathInstance)
+            {
+                search->fuzzyMatchCount++;
+                if (search->fuzzyMatchCount > 1)
+                {
+                    search->fuzzyAmbiguous = true;
+                    return;
+                }
             }
 
             search->found = true;
@@ -460,6 +508,206 @@ namespace OB::HID
             };
         }
 
+        static constexpr bool usage_token_equal(const UsageToken& a, const UsageToken& b)
+        {
+            return a.usagePage == b.usagePage && a.usage == b.usage;
+        }
+
+        template<std::size_t PathLen>
+        static constexpr bool fuzzy_path_matches_tokens(
+            const std::array<UsageToken, 16>& collectionStack,
+            std::size_t collectionDepth,
+            const UsageToken& leaf,
+            const std::array<UsageToken, PathLen>& path)
+        {
+            if constexpr (PathLen == 0)
+            {
+                return false;
+            }
+
+            if (!usage_token_equal(path[PathLen - 1], leaf))
+            {
+                return false;
+            }
+
+            std::size_t queryIndex = 0;
+            constexpr std::size_t queryCollectionLen = PathLen - 1;
+            for (std::size_t i = 0; i < collectionDepth && queryIndex < queryCollectionLen; ++i)
+            {
+                if (usage_token_equal(collectionStack[i], path[queryIndex]))
+                {
+                    ++queryIndex;
+                }
+            }
+
+            return queryIndex == queryCollectionLen;
+        }
+
+        struct CompileTimeLayoutState
+        {
+            int usagePage = 0;
+            std::size_t reportCount = 0;
+
+            bool localUsageValid = false;
+            int localUsage = 0;
+            bool localUsageMinValid = false;
+            int localUsageMin = 0;
+            bool localUsageMaxValid = false;
+            int localUsageMax = 0;
+
+            std::array<UsageToken, 16> collectionStack{};
+            std::size_t collectionDepth = 0;
+        };
+
+        static constexpr void reset_compile_time_local_state(CompileTimeLayoutState& state)
+        {
+            state.localUsageValid = false;
+            state.localUsage = 0;
+            state.localUsageMinValid = false;
+            state.localUsageMin = 0;
+            state.localUsageMaxValid = false;
+            state.localUsageMax = 0;
+        }
+
+        template<std::size_t PathLen>
+        static constexpr void consider_compile_time_field(
+            const CompileTimeLayoutState& state,
+            const std::array<UsageToken, PathLen>& path,
+            int usage,
+            std::size_t& count)
+        {
+            const UsageToken leaf{state.usagePage, usage};
+            if (fuzzy_path_matches_tokens(state.collectionStack, state.collectionDepth, leaf, path))
+            {
+                ++count;
+            }
+        }
+
+        template<std::size_t PathLen>
+        static constexpr void handle_compile_time_main_item(
+            CompileTimeLayoutState& state,
+            TagMain tag,
+            const std::array<UsageToken, PathLen>& path,
+            std::size_t& count)
+        {
+            if (tag == TagMain::Collection)
+            {
+                assert(state.collectionDepth < state.collectionStack.size());
+                state.collectionStack[state.collectionDepth] = {
+                    state.localUsageValid ? state.usagePage : -1,
+                    state.localUsageValid ? state.localUsage : -1,
+                };
+                state.collectionDepth++;
+                reset_compile_time_local_state(state);
+                return;
+            }
+
+            if (tag == TagMain::EndCollection)
+            {
+                assert(state.collectionDepth > 0);
+                state.collectionDepth--;
+                reset_compile_time_local_state(state);
+                return;
+            }
+
+            if (tag != TagMain::Input && tag != TagMain::Output && tag != TagMain::Feature)
+            {
+                reset_compile_time_local_state(state);
+                return;
+            }
+
+            if (state.localUsageMinValid && state.localUsageMaxValid)
+            {
+                const std::size_t countLimit = state.reportCount;
+                for (std::size_t i = 0; i < countLimit; ++i)
+                {
+                    consider_compile_time_field(state, path, state.localUsageMin + static_cast<int>(i), count);
+                }
+            }
+            else if (state.localUsageValid)
+            {
+                consider_compile_time_field(state, path, state.localUsage, count);
+            }
+
+            reset_compile_time_local_state(state);
+        }
+
+        template<class Item, std::size_t PathLen>
+        static constexpr void walk_compile_time_item(
+            CompileTimeLayoutState& state,
+            const std::array<UsageToken, PathLen>& path,
+            std::size_t& count)
+        {
+            if constexpr (has_items_method<Item>::value)
+            {
+                using child_tuple_t = std::remove_cvref_t<decltype(std::declval<const Item&>().items())>;
+                [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                    (walk_compile_time_item<std::tuple_element_t<Is, child_tuple_t>>(state, path, count), ...);
+                }(std::make_index_sequence<std::tuple_size_v<child_tuple_t>>{});
+                return;
+            }
+
+            if constexpr (global_item_info<Item>::is_global)
+            {
+                constexpr auto tag = global_item_info<Item>::tag;
+                if constexpr (requires { global_item_info<Item>::static_value; })
+                {
+                    constexpr int value = static_cast<int>(global_item_info<Item>::static_value);
+                    if (tag == TagGlobal::UsagePage)
+                    {
+                        state.usagePage = value;
+                    }
+                    else if (tag == TagGlobal::ReportCount)
+                    {
+                        assert(value >= 0);
+                        state.reportCount = static_cast<std::size_t>(value);
+                    }
+                }
+                return;
+            }
+
+            if constexpr (local_item_info<Item>::is_local)
+            {
+                constexpr auto tag = local_item_info<Item>::tag;
+                constexpr int value = static_cast<int>(local_item_info<Item>::static_value);
+                if (tag == TagLocal::Usage)
+                {
+                    state.localUsageValid = true;
+                    state.localUsage = value;
+                }
+                else if (tag == TagLocal::UsageMinimum)
+                {
+                    state.localUsageMinValid = true;
+                    state.localUsageMin = value;
+                }
+                else if (tag == TagLocal::UsageMaximum)
+                {
+                    state.localUsageMaxValid = true;
+                    state.localUsageMax = value;
+                }
+                return;
+            }
+
+            if constexpr (main_item_info<Item>::is_main)
+            {
+                handle_compile_time_main_item(state, main_item_info<Item>::tag, path, count);
+            }
+        }
+
+        template<auto ...UsagePath>
+        static consteval bool usage_path_exists_in_layout()
+        {
+            constexpr auto path = make_path_tokens<UsagePath...>();
+            CompileTimeLayoutState state{};
+            std::size_t count = 0;
+
+            [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                (walk_compile_time_item<Items>(state, path, count), ...);
+            }(std::make_index_sequence<sizeof...(Items)>{});
+
+            return count > 0;
+        }
+
         template<auto ...UsagePath>
         static constexpr auto make_path_tokens()
         {
@@ -501,12 +749,13 @@ namespace OB::HID
         }
 
         template<auto ...UsagePath>
+        requires(sizeof...(UsagePath) > 0 && usage_path_exists_in_layout<UsagePath...>())
         constexpr uint32_t get(std::span<const uint8_t> reportData, std::span<const std::size_t> indices) const
         {
-            static_assert(sizeof...(UsagePath) > 0, "get requires at least one usage in the path");
             constexpr auto path = make_path_tokens<UsagePath...>();
             const auto field = find_usage_field_by_path(std::span{path}, indices);
             assert(field.found);
+            assert(!field.fuzzyAmbiguous);
             assert(field.bitCount <= 32);
 
             bitspan<const uint8_t> bits{reportData};
@@ -514,9 +763,9 @@ namespace OB::HID
         }
 
         template<auto ...UsagePath>
+        requires(sizeof...(UsagePath) > 0 && usage_path_exists_in_layout<UsagePath...>())
         constexpr uint32_t get(std::span<const uint8_t> reportData, std::size_t index) const
         {
-            static_assert(sizeof...(UsagePath) > 0, "get requires at least one usage in the path");
             constexpr auto path = make_path_tokens<UsagePath...>();
             const auto field = find_usage_field_by_path(std::span{path}, index);
             assert(field.found);
@@ -527,27 +776,29 @@ namespace OB::HID
         }
 
         template<auto ...UsagePath>
+        requires(sizeof...(UsagePath) > 0 && usage_path_exists_in_layout<UsagePath...>())
         constexpr uint32_t get(std::span<const uint8_t> reportData) const
         {
             return get<UsagePath...>(reportData, std::span<const std::size_t>{});
         }
 
         template<auto ...UsagePath, typename T>
+        requires(sizeof...(UsagePath) > 0 && usage_path_exists_in_layout<UsagePath...>())
         constexpr void set(std::span<uint8_t> reportData, T value, std::span<const std::size_t> indices) const
         {
-            static_assert(sizeof...(UsagePath) > 0, "set requires at least one usage in the path");
             constexpr auto path = make_path_tokens<UsagePath...>();
             const auto field = find_usage_field_by_path(std::span{path}, indices);
             assert(field.found);
+            assert(!field.fuzzyAmbiguous);
 
             bitspan<uint8_t> bits{reportData};
             bits.template set<T>(value, field.bitOffset, field.bitCount);
         }
 
         template<auto ...UsagePath, typename T>
+        requires(sizeof...(UsagePath) > 0 && usage_path_exists_in_layout<UsagePath...>())
         constexpr void set(std::span<uint8_t> reportData, T value, std::size_t index) const
         {
-            static_assert(sizeof...(UsagePath) > 0, "set requires at least one usage in the path");
             constexpr auto path = make_path_tokens<UsagePath...>();
             const auto field = find_usage_field_by_path(std::span{path}, index);
             assert(field.found);
@@ -557,6 +808,7 @@ namespace OB::HID
         }
 
         template<auto ...UsagePath, typename T>
+        requires(sizeof...(UsagePath) > 0 && usage_path_exists_in_layout<UsagePath...>())
         constexpr void set(std::span<uint8_t> reportData, T value) const
         {
             set<UsagePath...>(reportData, value, std::span<const std::size_t>{});

@@ -32,6 +32,13 @@ namespace
     enum class TestNestedField : std::uint16_t
     {
         Value = 0x40,
+        Missing = 0x41,
+        Repeated = 0x42,
+    };
+
+    enum class TestOtherField : std::uint16_t
+    {
+        Ghost = 0x60,
     };
 }
 
@@ -171,6 +178,70 @@ TEST(ReportDataAccess, UsageSetGetWithinNestedCollections)
     const auto value = report.get<TestNestedCollection::Outer, TestNestedCollection::Inner, TestNestedField::Value>(std::span<const std::uint8_t>(buffer));
 
     EXPECT_EQ(value, 0x5AU);
+}
+
+TEST(ReportDataAccess, UsageSetGetWithinNestedCollectionsAllowsSkippingUnambiguousIntermediateUsage)
+{
+    using MyReport = OB::HID::Report<
+        ReportID<Helpers::Constant<1>>,
+        UsagePage<TestNestedCollection>,
+        Collection<
+            CollectionType::Logical,
+            Usage<TestNestedCollection::Outer>,
+            Collection<
+                CollectionType::Logical,
+                Usage<TestNestedCollection::Inner>,
+                Input<
+                    DataFlags<
+                        DataOrConstant::Data,
+                        ArrayOrVariable::Variable
+                    >,
+                    UsagePage<TestNestedField>,
+                    Usage<TestNestedField::Value>,
+                    ReportCount<Helpers::Constant<1>>,
+                    ReportSize<Helpers::Constant<8>>,
+                    LogicalMinimum<Helpers::Constant<0>>,
+                    LogicalMaximum<Helpers::Constant<255>>
+                >
+            >
+        >
+    >;
+
+    MyReport report{};
+    std::array<std::uint8_t, 2> buffer{1, 0};
+
+    report.set<TestNestedCollection::Outer, TestNestedField::Value>(std::span<std::uint8_t>(buffer), 0x6CU);
+    const auto value = report.get<TestNestedCollection::Outer, TestNestedField::Value>(std::span<const std::uint8_t>(buffer));
+
+    EXPECT_EQ(value, 0x6CU);
+}
+
+
+TEST(ReportDataAccess, InvalidUsagePathIsRejectedAtCompileTime)
+{
+    using MyReport = OB::HID::Report<
+        ReportID<Helpers::Constant<1>>,
+        UsagePage<TestNestedCollection>,
+        Collection<
+            CollectionType::Logical,
+            Usage<TestNestedCollection::Outer>,
+            Input<
+                DataFlags<
+                    DataOrConstant::Data,
+                    ArrayOrVariable::Variable
+                >,
+                UsagePage<TestNestedField>,
+                Usage<TestNestedField::Value>,
+                ReportCount<Helpers::Constant<1>>,
+                ReportSize<Helpers::Constant<8>>,
+                LogicalMinimum<Helpers::Constant<0>>,
+                LogicalMaximum<Helpers::Constant<255>>
+            >
+        >
+    >;
+
+    static_assert(!SupportsMissingUsageGet<MyReport>);
+    SUCCEED();
 }
 
 TEST(ReportDataAccess, DynamicRepeatCollectionSelectsPathInstance)

@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cstdint>
+#include <type_traits>
+
 #include "hid/usage.hpp"
 
 namespace OB::HID
@@ -14,6 +16,11 @@ namespace OB::HID
                 return value;
             }
             uint16_t value;
+            constexpr Ordinal(uint16_t v) : value(v) {}
+
+            // Constructor to allow implicit conversion from enum types to ordinal.
+            template<class T> requires(std::is_enum_v<T>)
+            constexpr Ordinal(T v) : value(static_cast<uint16_t>(v)) {}
         };
     }
 
