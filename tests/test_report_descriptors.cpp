@@ -204,6 +204,46 @@ TEST(ReportDescriptor, InputWithDynamic)
     }
 }
 
+TEST(ReportDescriptor, UsageWithoutUsagePage)
+{
+    using MyReport = OB::HID::Report<
+        ReportID<Helpers::Variable<uint8_t>>,
+        Input<
+            DataFlags<
+                DataOrConstant::Data,
+                ArrayOrVariable::Array
+            >,
+            Usage<TestUsagePage::TestUsage>,
+            LogicalMinimum<Helpers::Variable<int>>,
+            LogicalMaximum<Helpers::Variable<int>>,
+            ReportCount<Helpers::Constant<1>>,
+            ReportSize<Helpers::Constant<8>>
+        >
+    >;
+    auto myReport = MyReport{
+        report_id_t{4},
+        logical_min_t{4},
+        logical_max_t{10}
+    };
+
+    auto descriptor = myReport.descriptor();
+    std::array<uint8_t, 17> check_descriptor = {
+        0x85, 0x04, // ReportID(4)
+        0x0B, 0x10, 0x00, 0x33, 0x00, // UsageID(TestUsagePage::TestUsage)
+        0x15, 0x04, // LogicalMinimum(4)
+        0x25, 0x0A, // LogicalMaximum(10)
+        0x95, 0x01, // ReportCount(1)
+        0x75, 0x08, // ReportSize(8)
+        0x81, 0x00, // Input(Data, Var, ...) 
+    };
+
+    EXPECT_EQ(descriptor.size(), check_descriptor.size());
+    for (std::size_t i = 0; i < descriptor.size(); i++)
+    {
+        EXPECT_EQ(descriptor[i], check_descriptor[i]) << "i: " << i << std::endl;
+    }
+}
+
 
 TEST(ReportDescriptor, DescriptorWithCollection)
 {
