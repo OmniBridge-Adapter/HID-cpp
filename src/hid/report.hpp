@@ -156,6 +156,14 @@ namespace OB::HID
         struct has_repeat_count_method<T, std::void_t<decltype(std::declval<const T&>().repeat_count())>> : std::true_type
         {};
 
+        template<class T, class = void>
+        struct has_max_repeat_count_member : std::false_type
+        {};
+
+        template<class T>
+        struct has_max_repeat_count_member<T, std::void_t<decltype(T::max_repeat_count)>> : std::true_type
+        {};
+
         constexpr void reset_local_state(LayoutWalkState& state) const
         {
             state.localUsageValid = false;
@@ -510,7 +518,7 @@ namespace OB::HID
 
         static constexpr bool usage_token_equal(const UsageToken& a, const UsageToken& b)
         {
-            return a.usagePage == b.usagePage && a.usage == b.usage;
+            return a.usage == b.usage;
         }
 
         template<std::size_t PathLen>
@@ -641,9 +649,17 @@ namespace OB::HID
             if constexpr (has_items_method<Item>::value)
             {
                 using child_tuple_t = std::remove_cvref_t<decltype(std::declval<const Item&>().items())>;
-                [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                    (walk_compile_time_item<std::tuple_element_t<Is, child_tuple_t>>(state, path, count), ...);
-                }(std::make_index_sequence<std::tuple_size_v<child_tuple_t>>{});
+                if constexpr (has_max_repeat_count_member<Item>::value)
+                {
+                    for (std::size_t i = 0; i < Item::max_repeat_count; ++i)
+                    {
+                        walk_compile_time_tuple_items<child_tuple_t>(state, path, count);
+                    }
+                }
+                else
+                {
+                    walk_compile_time_tuple_items<child_tuple_t>(state, path, count);
+                }
                 return;
             }
 
@@ -694,8 +710,32 @@ namespace OB::HID
             }
         }
 
+        template<class Tuple, std::size_t PathLen, std::size_t ...Is>
+        static constexpr void walk_compile_time_tuple_items_impl(
+            CompileTimeLayoutState& state,
+            const std::array<UsageToken, PathLen>& path,
+            std::size_t& count,
+            std::index_sequence<Is...>)
+        {
+            (walk_compile_time_item<std::tuple_element_t<Is, Tuple>>(state, path, count), ...);
+        }
+
+        template<class Tuple, std::size_t PathLen>
+        static constexpr void walk_compile_time_tuple_items(
+            CompileTimeLayoutState& state,
+            const std::array<UsageToken, PathLen>& path,
+            std::size_t& count)
+        {
+            walk_compile_time_tuple_items_impl<Tuple>(
+                state,
+                path,
+                count,
+                std::make_index_sequence<std::tuple_size_v<Tuple>>{}
+            );
+        }
+
         template<auto ...UsagePath>
-        static consteval bool usage_path_exists_in_layout()
+        static consteval std::size_t usage_path_match_count_in_layout()
         {
             constexpr auto path = make_path_tokens<UsagePath...>();
             CompileTimeLayoutState state{};
@@ -705,7 +745,19 @@ namespace OB::HID
                 (walk_compile_time_item<Items>(state, path, count), ...);
             }(std::make_index_sequence<sizeof...(Items)>{});
 
-            return count > 0;
+            return count;
+        }
+
+        template<auto ...UsagePath>
+        static consteval bool usage_path_exists_in_layout()
+        {
+            return usage_path_match_count_in_layout<UsagePath...>() > 0;
+        }
+
+        template<auto ...UsagePath>
+        static consteval bool usage_path_is_unique_in_layout()
+        {
+            return usage_path_match_count_in_layout<UsagePath...>() == 1;
         }
 
         template<auto ...UsagePath>
@@ -776,7 +828,7 @@ namespace OB::HID
         }
 
         template<auto ...UsagePath>
-        requires(sizeof...(UsagePath) > 0 && usage_path_exists_in_layout<UsagePath...>())
+        requires(sizeof...(UsagePath) > 0 && usage_path_exists_in_layout<UsagePath...>() && usage_path_is_unique_in_layout<UsagePath...>())
         constexpr uint32_t get(std::span<const uint8_t> reportData) const
         {
             return get<UsagePath...>(reportData, std::span<const std::size_t>{});
@@ -808,7 +860,7 @@ namespace OB::HID
         }
 
         template<auto ...UsagePath, typename T>
-        requires(sizeof...(UsagePath) > 0 && usage_path_exists_in_layout<UsagePath...>())
+        requires(sizeof...(UsagePath) > 0 && usage_path_exists_in_layout<UsagePath...>() && usage_path_is_unique_in_layout<UsagePath...>())
         constexpr void set(std::span<uint8_t> reportData, T value) const
         {
             set<UsagePath...>(reportData, value, std::span<const std::size_t>{});

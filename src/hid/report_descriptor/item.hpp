@@ -719,6 +719,8 @@ namespace OB::HID::ReportDescriptor
         using group_type = ItemGroup<Items...>;
     public:
         static_assert(MIN <= MAX, "Repeat MIN must be <= MAX");
+        static constexpr std::size_t min_repeat_count = MIN;
+        static constexpr std::size_t max_repeat_count = MAX;
 
         using ctor_param_types = typename tuple_concat_types<std::tuple<repeat_count_t>, typename group_type::ctor_param_types>::type;
         constexpr static std::size_t descriptor_max_len = MAX * group_type::descriptor_max_len;

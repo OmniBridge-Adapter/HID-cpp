@@ -40,6 +40,17 @@ namespace
     {
         Ghost = 0x60,
     };
+
+    enum class TestAmbiguousCollection : std::uint16_t
+    {
+        First = 0x70,
+        Second = 0x71,
+    };
+
+    enum class TestAmbiguousField : std::uint16_t
+    {
+        Shared = 0x72,
+    };
 }
 
 namespace OB::HID
@@ -67,7 +78,60 @@ namespace OB::HID
     {
         return UsagePageInfo{0x20};
     }
+
+    template<>
+    constexpr UsagePageInfo get_info<TestOtherField>()
+    {
+        return UsagePageInfo{0x21};
+    }
+
+    template<>
+    constexpr UsagePageInfo get_info<TestAmbiguousCollection>()
+    {
+        return UsagePageInfo{0x22};
+    }
+
+    template<>
+    constexpr UsagePageInfo get_info<TestAmbiguousField>()
+    {
+        return UsagePageInfo{0x23};
+    }
 }
+
+template<typename ReportT>
+concept SupportsMissingUsageGet = requires(const ReportT& report, const std::array<std::uint8_t, 2>& buffer) {
+    report.template get<TestOtherField::Ghost>(std::span<const std::uint8_t>(buffer));
+};
+
+template<typename ReportT>
+concept SupportsRepeatedValueGetWithoutIndex = requires(const ReportT& report, const std::array<std::uint8_t, 3>& buffer) {
+    report.template get<TestNestedCollection::Outer, TestNestedField::Value>(std::span<const std::uint8_t>(buffer));
+};
+
+template<typename ReportT>
+concept SupportsRepeatedValueSetWithoutIndex = requires(ReportT& report, std::array<std::uint8_t, 3>& buffer) {
+    report.template set<TestNestedCollection::Outer, TestNestedField::Value>(std::span<std::uint8_t>(buffer), 0x11U);
+};
+
+template<typename ReportT>
+concept SupportsRepeatedValueGetWithIndex = requires(const ReportT& report, const std::array<std::uint8_t, 3>& buffer) {
+    report.template get<TestNestedCollection::Outer, TestNestedField::Value>(std::span<const std::uint8_t>(buffer), 0U);
+};
+
+template<typename ReportT>
+concept SupportsRepeatedValueSetWithIndex = requires(ReportT& report, std::array<std::uint8_t, 3>& buffer) {
+    report.template set<TestNestedCollection::Outer, TestNestedField::Value>(std::span<std::uint8_t>(buffer), 0x11U, 0U);
+};
+
+template<typename ReportT>
+concept SupportsAmbiguousSharedGetWithoutOuter = requires(const ReportT& report, const std::array<std::uint8_t, 3>& buffer) {
+    report.template get<TestAmbiguousField::Shared>(std::span<const std::uint8_t>(buffer));
+};
+
+template<typename ReportT>
+concept SupportsAmbiguousSharedGetWithOuter = requires(const ReportT& report, const std::array<std::uint8_t, 3>& buffer) {
+    report.template get<TestAmbiguousCollection::First, TestAmbiguousField::Shared>(std::span<const std::uint8_t>(buffer));
+};
 
 TEST(ReportDataAccess, UsageSetGetWithNoCollectionNesting)
 {
@@ -216,6 +280,61 @@ TEST(ReportDataAccess, UsageSetGetWithinNestedCollectionsAllowsSkippingUnambiguo
     EXPECT_EQ(value, 0x6CU);
 }
 
+TEST(ReportDataAccess, UsageSetGetRepeatedWithinNestedCollection)
+{
+    using MyReport = OB::HID::Report<
+        ReportID<Helpers::Constant<1>>,
+        UsagePage<TestNestedCollection>,
+        Collection<
+            CollectionType::Logical,
+            Usage<TestNestedCollection::Outer>,
+            Input<
+                DataFlags<
+                    DataOrConstant::Data,
+                    ArrayOrVariable::Variable
+                >,
+                UsagePage<TestNestedField>,
+                Usage<TestNestedField::Value>,
+                ReportCount<Helpers::Constant<1>>,
+                ReportSize<Helpers::Constant<8>>,
+                LogicalMinimum<Helpers::Constant<0>>,
+                LogicalMaximum<Helpers::Constant<255>>
+            >,
+            Repeat<
+                1,
+                2,
+                Collection<
+                    CollectionType::Logical,
+                    Usage<TestNestedCollection::Inner>,
+                    Input<
+                        DataFlags<
+                            DataOrConstant::Data,
+                            ArrayOrVariable::Variable
+                        >,
+                        UsagePage<TestNestedField>,
+                        Usage<TestNestedField::Repeated>,
+                        ReportCount<Helpers::Constant<1>>,
+                        ReportSize<Helpers::Constant<8>>,
+                        LogicalMinimum<Helpers::Constant<0>>,
+                        LogicalMaximum<Helpers::Constant<255>>
+                    >
+                >
+            >
+        >
+    >;
+
+    MyReport report{repeat_count_t{2}};
+    std::array<std::uint8_t, 4> buffer{1, 0, 0, 0};
+
+    report.set<TestNestedCollection::Outer, TestNestedField::Value>(std::span<std::uint8_t>(buffer), 0x6CU);
+    const auto value = report.get<TestNestedCollection::Outer, TestNestedField::Value>(std::span<const std::uint8_t>(buffer));
+
+    report.set<TestNestedCollection::Inner, TestNestedField::Repeated>(std::span<std::uint8_t>(buffer), 0x5AU, 0);
+    const auto repeatedValue = report.get<TestNestedCollection::Inner, TestNestedField::Repeated>(std::span<const std::uint8_t>(buffer), 0);
+
+    EXPECT_EQ(value, 0x6CU);
+    EXPECT_EQ(repeatedValue, 0x5AU);
+}
 
 TEST(ReportDataAccess, InvalidUsagePathIsRejectedAtCompileTime)
 {
@@ -241,6 +360,84 @@ TEST(ReportDataAccess, InvalidUsagePathIsRejectedAtCompileTime)
     >;
 
     static_assert(!SupportsMissingUsageGet<MyReport>);
+    SUCCEED();
+}
+
+TEST(ReportDataAccess, RepeatedPathRequiresIndexAtCompileTime)
+{
+    using MyReport = OB::HID::Report<
+        ReportID<Helpers::Constant<1>>,
+        UsagePage<TestNestedCollection>,
+        Repeat<
+            1,
+            4,
+            Collection<
+                CollectionType::Logical,
+                Usage<TestNestedCollection::Outer>,
+                Input<
+                    DataFlags<
+                        DataOrConstant::Data,
+                        ArrayOrVariable::Variable
+                    >,
+                    UsagePage<TestNestedField>,
+                    Usage<TestNestedField::Value>,
+                    ReportCount<Helpers::Constant<1>>,
+                    ReportSize<Helpers::Constant<8>>,
+                    LogicalMinimum<Helpers::Constant<0>>,
+                    LogicalMaximum<Helpers::Constant<255>>
+                >
+            >
+        >
+    >;
+
+    static_assert(!SupportsRepeatedValueGetWithoutIndex<MyReport>);
+    static_assert(!SupportsRepeatedValueSetWithoutIndex<MyReport>);
+    static_assert(SupportsRepeatedValueGetWithIndex<MyReport>);
+    static_assert(SupportsRepeatedValueSetWithIndex<MyReport>);
+    SUCCEED();
+}
+
+TEST(ReportDataAccess, AmbiguousSameUsageWithoutOuterIsCompileTimeError)
+{
+    using MyReport = OB::HID::Report<
+        ReportID<Helpers::Constant<1>>,
+        UsagePage<TestAmbiguousCollection>,
+        Collection<
+            CollectionType::Logical,
+            Usage<TestAmbiguousCollection::First>,
+            Input<
+                DataFlags<
+                    DataOrConstant::Data,
+                    ArrayOrVariable::Variable
+                >,
+                UsagePage<TestAmbiguousField>,
+                Usage<TestAmbiguousField::Shared>,
+                ReportCount<Helpers::Constant<1>>,
+                ReportSize<Helpers::Constant<8>>,
+                LogicalMinimum<Helpers::Constant<0>>,
+                LogicalMaximum<Helpers::Constant<255>>
+            >
+        >,
+        Collection<
+            CollectionType::Logical,
+            Usage<TestAmbiguousCollection::Second>,
+            Input<
+                DataFlags<
+                    DataOrConstant::Data,
+                    ArrayOrVariable::Variable
+                >,
+                UsagePage<TestAmbiguousField>,
+                Usage<TestAmbiguousField::Shared>,
+                ReportCount<Helpers::Constant<1>>,
+                ReportSize<Helpers::Constant<8>>,
+                LogicalMinimum<Helpers::Constant<0>>,
+                LogicalMaximum<Helpers::Constant<255>>
+            >
+        >
+    >;
+
+    static_assert(!SupportsAmbiguousSharedGetWithoutOuter<MyReport>);
+    static_assert(SupportsAmbiguousSharedGetWithOuter<MyReport>);
     SUCCEED();
 }
 

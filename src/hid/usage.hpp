@@ -4,6 +4,8 @@
 
 namespace OB::HID
 {
+
+    // concept UsagePage = 
     struct UsagePageInfo
     {
         std::uint16_t usagePage;
